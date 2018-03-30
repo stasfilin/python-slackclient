@@ -6,6 +6,7 @@ import traceback
 
 from .log import logger
 from .server import Server
+from .exceptions import ParseResponseError
 
 
 class SlackClient(object):
@@ -51,11 +52,11 @@ class SlackClient(object):
 
         try:
             self.server.rtm_connect(use_rtm_start=with_team_state, **kwargs)
-            return True
+            return self.server.connected
         except Exception as e:
             logger.exception(e)
             traceback.print_exc()
-            return False
+            return self.server.connected
 
     def api_call(self, method, timeout=None, **kwargs):
         '''
@@ -87,25 +88,19 @@ class SlackClient(object):
 
             See here for more information on responses: https://api.slack.com/web
         '''
-        result = json.loads(self.server.api_call(method, timeout=timeout, **kwargs))
-        if self.server:
+        response_body = self.server.api_call(method, timeout=timeout, **kwargs)
+        try:
+            result = json.loads(response_body)
+        except ValueError as json_decode_error:
+            raise ParseResponseError(response_body, json_decode_error)
+
+        if "ok" in result and result["ok"]:
             if method == 'im.open':
-                if "ok" in result and result["ok"]:
-                    self.server.attach_channel(kwargs["user"], result["channel"]["id"])
+                self.server.attach_channel(kwargs["user"], result["channel"]["id"])
             elif method in ('mpim.open', 'groups.create', 'groups.createchild'):
-                if "ok" in result and result["ok"]:
-                    self.server.attach_channel(
-                        result['group']['name'],
-                        result['group']['id'],
-                        result['group']['members']
-                    )
+                self.server.parse_channel_data([result['group']])
             elif method in ('channels.create', 'channels.join'):
-                if 'ok' in result and result['ok']:
-                    self.server.attach_channel(
-                        result['channel']['name'],
-                        result['channel']['id'],
-                        result['channel']['members']
-                    )
+                self.server.parse_channel_data([result['channel']])
         return result
 
     def rtm_read(self):
